@@ -52,27 +52,28 @@ Control PC ──(USB Serial)──► Teensy 4.1 ──(USB Device)──► Ta
 
 ```
 src/
-├── main.rs              entry point, init, main loop
-├── usb/                 EHCI host controller driver
-│   ├── ehci.rs          controller init, reset, port management
-│   ├── qh.rs            Queue Head descriptors
-│   ├── qtd.rs           Queue Transfer Descriptors
-│   ├── periodic.rs      periodic frame list, microframe scheduling
+├── main.rs               entry point, init, main loop
+├── usb/                  low-level USB controller drivers
+│   ├── ehci.rs           host controller (USB2)
+│   ├── device.rs         device controller (USB1)
+│   ├── qh.rs             host Queue Head descriptors
+│   ├── qtd.rs            host Transfer Descriptors
+│   ├── periodic.rs       periodic frame list, 8kHz scheduling
 │   ├── async_schedule.rs async schedule for control transfers
-│   └── transaction.rs   submit/poll transfer helpers
-├── host/                upstream mouse handling
-│   ├── enumerate.rs     USB enumeration state machine
-│   ├── hid.rs           HID report descriptor parser
-│   └── mouse.rs         mouse report interpretation
-├── device/              downstream HID device to target PC
-│   ├── descriptors.rs   dynamic HID descriptor construction
-│   ├── endpoint.rs      interrupt IN endpoint
-│   └── hid_device.rs    USB HID device class
-├── proxy/               forwarding and injection logic
-│   ├── forward.rs       report forwarding
-│   └── inject.rs        injection command merging
-└── serial/              control PC communication
-    └── command.rs       UART command parser
+│   └── transaction.rs    transfer submission and completion
+├── host/                 upstream mouse handling
+│   ├── enumerate.rs      full device enumeration
+│   ├── hid.rs            HID report descriptor parser
+│   └── mouse.rs          mouse report interpretation
+├── device/               downstream device to target PC
+│   ├── descriptors.rs    1:1 descriptor cloning
+│   ├── endpoint.rs       proxy endpoint (any type/direction)
+│   └── proxy_device.rs   transparent proxy device
+├── proxy/                forwarding and injection
+│   ├── forward.rs        endpoint traffic routing
+│   └── inject.rs         mouse movement injection
+└── serial/               control PC communication
+    └── command.rs        injection command parser
 ```
 
 ## License

@@ -1,6 +1,6 @@
 # teensytrap
 
-USB HID mouse proxy on Teensy 4.1 (NXP iMXRT1062). Intercepts a mouse via USB host, clones its identity exactly, and re-presents it to a target PC via USB device — while accepting injection commands from a control PC over serial.
+Transparent USB mouse proxy on Teensy 4.1 (NXP iMXRT1062). Sits between a mouse and a target PC as an invisible pass-through — cloning the mouse's full USB identity and forwarding ALL traffic bidirectionally. The only thing we add is the ability to inject mouse movements from a control PC.
 
 ## Architecture
 
@@ -13,20 +13,22 @@ Control PC ──(USB Serial)──► Teensy 4.1 ──(USB Device @ 480Mbps HS
 ```
 
 The Teensy uses both independent USB controllers on the iMXRT1062:
-- **USB2 (Host)**: Enumerates upstream mouse, polls interrupt IN endpoint at up to 8kHz (125µs microframes)
-- **USB1 (Device)**: Presents as an identical HID mouse to the target PC
+- **USB2 (Host)**: Enumerates upstream mouse, forwards all endpoint traffic
+- **USB1 (Device)**: Presents as an exact clone of the upstream mouse to the target PC
 
 ## Core Design Principles
 
-### Exact 1:1 Descriptor Cloning
-The proxy must be indistinguishable from the real mouse. This means:
+### Exact 1:1 Transparent Proxy
+The proxy must be completely indistinguishable from the real mouse. The target PC must not be able to tell that the proxy exists. This means:
 - Raw device descriptor cloned byte-for-byte (VID, PID, bcdDevice, bcdUSB, all of it)
-- Raw configuration descriptor cloned byte-for-byte (interface, endpoint, HID class descriptors)
-- Raw HID report descriptor cloned byte-for-byte (report fields, usage pages, collections)
-- String descriptors cloned byte-for-byte (manufacturer, product, serial number)
-- Interrupt IN endpoint max packet size and bInterval match the upstream mouse exactly
+- Raw configuration descriptor cloned byte-for-byte — ALL interfaces, ALL endpoints, not just the mouse HID one
+- Raw HID report descriptors cloned byte-for-byte for EVERY HID interface
+- ALL string descriptors cloned byte-for-byte (manufacturer, product, serial number, and any others)
+- ALL endpoints forwarded: interrupt IN/OUT, bulk IN/OUT — whatever the mouse exposes
+- Control transfers from the target PC forwarded upstream to the real mouse (SET_REPORT, vendor requests, firmware update commands, everything)
+- Only the mouse HID interrupt IN endpoint is intercepted for injection — everything else is pure passthrough
 
-`EnumeratedDevice` stores all raw descriptors. `ClonedDescriptors::from_upstream()` does a direct copy — no reconstruction, no reinterpretation. The target PC sees the same bytes that the real mouse would send during enumeration.
+This means firmware updates from Razer Synapse / Logitech G Hub / SteelSeries GG work. DPI changes work. LED configuration works. Macro programming works. Profile switching works. The proxy is invisible.
 
 ### High-Speed USB (480Mbps)
 Both USB ports run at USB 2.0 High Speed. The EHCI periodic schedule is configured to poll every microframe (S-mask 0xFF = 8kHz). The iMXRT1062 has integrated High-Speed PHYs on both ports — no external ULPI chip needed.
@@ -36,14 +38,20 @@ Direct EHCI register access via `imxrt-ral`. No USB middleware, no HAL USB stack
 
 ## Module Responsibilities
 
-- `usb/` — EHCI host controller driver. QH/qTD data structures, periodic frame list for 8kHz interrupt polling, async schedule for control transfers during enumeration.
-- `host/enumerate.rs` — USB enumeration state machine. Issues SET_ADDRESS, GET_DESCRIPTOR (device, config, string, HID report), SET_CONFIGURATION. Stores all raw descriptor bytes.
-- `host/hid.rs` — HID report descriptor parser. Walks the descriptor byte stream to determine field layout (button count, axis widths, report IDs) so we can interpret incoming reports for injection merging.
+- `usb/ehci.rs` — EHCI host controller driver. Initializes USB2 in host mode, manages port power/reset/detection.
+- `usb/device.rs` — USB device controller driver. Initializes USB1 in device mode with dQH/dTD structures. Handles EP0 SETUP packets, dynamic descriptor serving, endpoint priming/stalling. This is a separate driver from the host EHCI — the iMXRT1062 device controller has its own register set and data structures.
+- `usb/qh.rs`, `usb/qtd.rs` — Host-side EHCI Queue Head and Transfer Descriptor structures.
+- `usb/periodic.rs` — Periodic frame list for 8kHz interrupt polling (S-mask 0xFF, every microframe).
+- `usb/async_schedule.rs` — Async schedule for control transfers during enumeration and forwarding.
+- `usb/transaction.rs` — Transfer submission and completion polling.
+- `host/enumerate.rs` — USB enumeration state machine. Discovers ALL interfaces, ALL endpoints, ALL string descriptors (walks both device and config descriptors for string indices), ALL HID report descriptors. Stores everything as raw bytes.
+- `host/hid.rs` — HID report descriptor parser. Walks the mouse HID report descriptor to determine field layout (button count, axis widths, report IDs) so we can interpret incoming reports for injection merging.
 - `host/mouse.rs` — Interprets raw HID report bytes into structured `MouseReport` values using the parsed field layout.
-- `device/descriptors.rs` — Takes `EnumeratedDevice` and produces `ClonedDescriptors` — byte-for-byte copies of every upstream descriptor.
-- `device/hid_device.rs` — USB HID device class. Presents the cloned descriptors to the target PC and streams HID reports out the interrupt IN endpoint.
-- `proxy/forward.rs` — Receives parsed mouse reports and serializes them back into raw HID report bytes for the device side.
-- `proxy/inject.rs` — Merges injection commands into mouse reports. Additive for dx/dy, override for buttons/wheel.
+- `device/descriptors.rs` — `ClonedDescriptors::from_upstream()` does byte-for-byte copies of everything: device desc, config desc, all HID report descs, all string descs.
+- `device/endpoint.rs` — `ProxyEndpoint` handles any endpoint type (interrupt, bulk) in either direction.
+- `device/proxy_device.rs` — `ProxyDevice` presents the full cloned device to the target PC. Handles control transfer forwarding to upstream mouse, all endpoint traffic, and identifies which endpoint is the mouse HID interrupt IN for injection.
+- `proxy/forward.rs` — Routes endpoint traffic. Mouse HID interrupt IN goes through the injection pipeline. Everything else is byte-for-byte passthrough.
+- `proxy/inject.rs` — Merges injection commands into mouse reports only. Additive for dx/dy, optional override for buttons/wheel.
 - `serial/command.rs` — Binary protocol parser for injection commands from the control PC over UART.
 
 ## Injection Protocol
@@ -76,12 +84,13 @@ teensy-loader-cli -w -v --mcu=imxrt1062 teensytrap.hex
 - No doc-style comments on scaffold stubs — comments are added during implementation passes
 - Dead code warnings are expected during scaffolding — do not add `#[allow(dead_code)]`
 - All descriptors are raw byte arrays or `heapless::Vec<u8, N>` — never reconstructed from parsed fields
+- Traffic that isn't the mouse HID interrupt IN is forwarded byte-for-byte with zero interpretation
 
 ## Hardware
 
 - **Board**: Teensy 4.1 (PJRC)
 - **MCU**: NXP iMXRT1062 (ARM Cortex-M7 @ 600MHz, 1MB TCM RAM)
-- **USB Host**: USB2 EHCI controller with integrated HS PHY (pin header on Teensy 4.1)
+- **USB Host**: USB2 EHCI controller with integrated HS PHY (5-pin header on Teensy 4.1)
 - **USB Device**: USB1 EHCI controller with integrated HS PHY (micro-USB connector)
 - **Serial**: Any hardware UART (pins configurable) for control PC injection commands
 
