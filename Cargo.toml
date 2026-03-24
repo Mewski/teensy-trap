@@ -1,0 +1,27 @@
+[package]
+name = "teensytrap"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+
+[dependencies]
+teensy4-bsp = { version = "0.5", features = ["rt"] }
+teensy4-panic = "0.2"
+imxrt-ral = { version = "0.5", features = ["imxrt1062"] }
+imxrt-hal = { version = "0.5", features = ["imxrt1060"] }
+cortex-m = "0.7"
+cortex-m-rt = "0.7"
+defmt = "1.0"
+defmt-rtt = "1.1"
+bitflags = "2.11"
+heapless = "0.9"
+critical-section = "1.2"
+fugit = "0.3"
+
+[profile.release]
+opt-level = "s"
+debug = true
+lto = true
+
+[profile.release.build-override]
+opt-level = 0

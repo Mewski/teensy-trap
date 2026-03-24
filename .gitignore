@@ -1,0 +1,5 @@
+target/
+.direnv/
+*.hex
+*.bin
+*.elf
